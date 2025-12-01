@@ -11,10 +11,8 @@ const __dirname = path.dirname(__filename);
 // -------------------------------
 
 // --- DEBUG LOGGER (Schreibt auf den Desktop) ---
-// Falls etwas schiefgeht, wird hier eine Datei erstellt.
 function logError(msg) {
     try {
-        // Sicherstellen, dass die App-Pfad-Funktion verfügbar ist, bevor sie verwendet wird
         const logPath = path.join(app.getPath('desktop'), 'focus-timer-debug.txt');
         fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`);
     } catch (e) { 
@@ -24,7 +22,7 @@ function logError(msg) {
 
 // State Management
 let currentBlacklist = ['steam.exe']; 
-let currentStartPath = 'steam://'; // NEU: Standardpfad für den manuellen Start
+let currentStartPath = 'steam://'; 
 let mainWindow = null;
 let gamingActive = false;
 let isDev = !app.isPackaged;
@@ -33,8 +31,6 @@ let isDev = !app.isPackaged;
 function getSystemBinaryPath(binaryName) {
     const winDir = process.env.SystemRoot || 'C:\\Windows';
     
-    // Prüfen, ob wir eine 32-Bit App auf 64-Bit Windows sind (WoW64)
-    // In diesem Fall müssen wir 'Sysnative' nutzen, um auf das echte System32 zuzugreifen
     const isWow64 = process.arch === 'ia32' && process.env.hasOwnProperty('PROCESSOR_ARCHITEW6432');
     
     const sysDir = isWow64 ? 'Sysnative' : 'System32';
@@ -55,7 +51,7 @@ function createWindow() {
     height: 800,
     autoHideMenuBar: true,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'), // Sicherstellen, dass .cjs geladen wird
+      preload: path.join(__dirname, 'preload.cjs'), 
       nodeIntegration: false, 
       contextIsolation: true 
     },
@@ -77,7 +73,6 @@ const processCheckInterval = 2000;
 function checkProcesses() {
     if (os.platform() !== 'win32') return;
 
-    // Verwende execFile für maximale Robustheit
     execFile(TASKLIST_PATH, ['/nh', '/fo', 'csv'], (error, stdout) => {
         if (error) {
             logError(`Tasklist Fehler: ${error.message}`);
@@ -101,7 +96,6 @@ function checkProcesses() {
         
         // --- LOGIK STARTEN (Signal senden, solange der Prozess läuft) ---
         if (blacklistedProcessFound) {
-            // Sende Signal IMMER, um Race Conditions beim App-Start zu beheben
             if (mainWindow) {
                 mainWindow.webContents.send('start-gaming-mode', foundProcessName);
             }
@@ -134,16 +128,29 @@ app.whenReady().then(() => {
     intervalId = setInterval(checkProcesses, processCheckInterval);
   }
 
+  // --- NEU: IPC Handlers für Autostart ---
+  ipcMain.handle('toggle-autostart', (event, enable) => {
+      // openAtLogin ist der Schlüssel für Windows/macOS Autostart
+      app.setLoginItemSettings({
+          openAtLogin: enable,
+          // Auf Windows: Der Pfad zur EXE ist wichtig, wenn die App nicht im Standard-Installationspfad ist
+          path: app.getPath('exe') 
+      });
+      logError(`Autostart auf ${enable ? 'AKTIVIERT' : 'DEAKTIVIERT'} gesetzt.`);
+      return app.getLoginItemSettings().openAtLogin;
+  });
+
+  ipcMain.handle('get-autostart-status', () => {
+      return app.getLoginItemSettings().openAtLogin;
+  });
+  // --- ENDE Autostart Handlers ---
+
   // IPC-HANDLER: Manuelles Starten des konfigurierten Programms
   ipcMain.handle('start-steam', () => {
-    // currentStartPath wird vom Frontend gesetzt (z.B. steam:// oder C:\Pfad\App.exe)
-    
-    // Protokoll-Links (z.B. steam://) oder Pfade zur EXE
     shell.openExternal(currentStartPath)
         .then(() => logError(`Startbefehl gesendet für: ${currentStartPath}`))
         .catch(err => logError(`Fehler beim Starten von ${currentStartPath}: ${err.message}`));
     
-    // Wir setzen gamingActive immer auf true, da das Frontend den Modus gewechselt hat.
     gamingActive = true; 
   });
 
@@ -153,7 +160,6 @@ app.whenReady().then(() => {
     logError("Manuelles Killen ausgelöst.");
     
     for (const processName of currentBlacklist) {
-        // Verwende den expliziten taskkill-Pfad
         execFile(TASKKILL_PATH, ['/IM', processName, '/F'], (error) => {
             if (error && !error.message.includes('not found')) {
                 logError(`Kill Fehler bei ${processName}: ${error.message}`);
@@ -164,13 +170,12 @@ app.whenReady().then(() => {
     }
   });
   
-  // IPC-RECEIVER: React sagt uns, wenn der Modus manuell BEENDET wurde
+  // IPC-RECEIVER: Status-Updates
   ipcMain.on('end-gaming-manual', () => { 
       gamingActive = false;
       logError("Backend-Status: Manuell beendet (vom Frontend).");
   });
   
-  // IPC-RECEIVER: Empfängt ALLE Einstellungen vom React-Frontend (inkl. Blacklist & Startpfad)
   ipcMain.on('update-settings', (event, settings) => {
       if (settings) {
           if (settings.blacklistProcesses) {

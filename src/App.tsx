@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'; 
 import { 
   Clock, Gamepad2, AlertCircle, Settings, 
-  Plus, Trash2, Lock, Briefcase, BarChart3, Moon, Sun, Volume2, VolumeX, FolderOpen, RotateCcw
+  Plus, Trash2, Lock, Briefcase, BarChart3, Moon, Sun, Volume2, VolumeX, FolderOpen, RotateCcw, Zap
 } from 'lucide-react';
 
 // --- TYPEDEFS ---
@@ -15,6 +15,10 @@ declare global {
       onEndGaming: (callback: () => void) => void; 
       endGamingManual: () => void; 
       sendSettings: (settings: AppSettings) => void;
+      
+      // NEU: Autostart Funktionen
+      toggleAutostart: (enable: boolean) => Promise<boolean>;
+      getAutostartStatus: () => Promise<boolean>;
     };
   }
 }
@@ -40,7 +44,7 @@ interface AppSettings {
   themeMode: ThemeMode;
   blacklistProcesses: string[];
   soundEnabled: boolean; 
-  startPath: string; // NEU: Pfad zum manuell zu startenden Programm
+  startPath: string; 
 }
 
 const Themes = {
@@ -83,7 +87,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   themeMode: 'dark', 
   blacklistProcesses: ['steam.exe'], 
   soundEnabled: true, 
-  startPath: 'steam://', // NEU: Standardpfad
+  startPath: 'steam://',
 };
 
 // --- AUDIO ENGINE (Synthesizer) ---
@@ -152,6 +156,7 @@ const App = () => {
   const [showPasswordPrompt, setShowPasswordPrompt] = useState(false);
   const [processAlert, setProcessAlert] = useState<string | null>(null); 
   const [isElectronConnected, setIsElectronConnected] = useState(false);
+  const [autostartEnabled, setAutostartEnabled] = useState(false); // NEU: Autostart Status
 
   const loaded = useRef(false);
   const isGameOver = balance <= 0 && mode === 'gaming';
@@ -160,6 +165,11 @@ const App = () => {
   // --- PERSISTENZ & INITIALISIERUNG ---
   useEffect(() => {
     if (window.electron) setIsElectronConnected(true);
+
+    // Lade Autostart Status
+    if (window.electron?.getAutostartStatus) {
+        window.electron.getAutostartStatus().then(status => setAutostartEnabled(status));
+    }
 
     const savedBalance = localStorage.getItem('st_balance');
     const savedHistory = localStorage.getItem('st_history');
@@ -177,7 +187,7 @@ const App = () => {
         currentSettings.blacklistProcesses = [currentSettings.processName || 'steam.exe'];
       }
       if (currentSettings.soundEnabled === undefined) currentSettings.soundEnabled = true;
-      if (!currentSettings.startPath) currentSettings.startPath = 'steam://'; // NEU: Pfad-Migration
+      if (!currentSettings.startPath) currentSettings.startPath = 'steam://';
 
       setSettings(currentSettings);
       if (currentSettings.categories.length > 0) setSelectedCategory(currentSettings.categories[0]);
@@ -197,14 +207,24 @@ const App = () => {
     if (!loaded.current) return;
     localStorage.setItem('st_balance', balance.toString());
     localStorage.setItem('st_history', JSON.stringify(history));
-    // Fügen Sie den neuen Wert startPath beim Speichern hinzu
     localStorage.setItem('st_settings', JSON.stringify(settings)); 
   }, [balance, history, settings]);
   
-  // Senden der Settings an Electron für die Blacklist-Überwachung (inkl. startPath)
+  // Senden der Settings an Electron
   useEffect(() => {
       if (window.electron?.sendSettings) window.electron.sendSettings(settings);
   }, [settings]);
+
+  // Handler für Autostart Toggle
+  const toggleAutostart = async () => {
+    if (window.electron?.toggleAutostart) {
+        const newStatus = !autostartEnabled;
+        const finalStatus = await window.electron.toggleAutostart(newStatus);
+        setAutostartEnabled(finalStatus);
+        setProcessAlert(`Autostart ${finalStatus ? 'aktiviert' : 'deaktiviert'}.`);
+        setTimeout(() => setProcessAlert(null), 3000);
+    }
+  };
 
   useEffect(() => {
     if (window.electron?.onStartGaming) {
@@ -235,9 +255,7 @@ const App = () => {
   const triggerSteamStart = () => window.electron?.startSteam() || console.log(">> Start App");
   const triggerSteamKill = () => window.electron?.killSteam() || console.log(">> Kill App");
 
-  // --- NEUE FUNKTION: Guthaben auf Tageslimit zurücksetzen ---
   const resetBalanceToDailyAllowance = () => {
-    // Wandelt die Minuten des täglichen Limits in Sekunden um
     const dailyAllowanceSeconds = settings.dailyAllowance * 60;
     setBalance(dailyAllowanceSeconds);
     setProcessAlert(`Guthaben auf ${formatTime(dailyAllowanceSeconds)} (Tageslimit) zurückgesetzt.`);
@@ -514,7 +532,21 @@ const App = () => {
             
             <div className="space-y-6">
               
-               {/* NEU: Startpfad Konfiguration */}
+               {/* NEU: Autostart Toggle */}
+              <div className={`p-4 rounded-lg border ${theme.cardBorder} ${theme.cardBg} flex justify-between items-center`}>
+                <div>
+                    <label className={`block text-sm font-bold ${theme.textPrimary} mb-1 flex items-center gap-2`}><Zap size={16}/> System-Autostart</label>
+                    <p className={`text-xs ${theme.textSecondary}`}>Startet die Anwendung automatisch beim Hochfahren des Systems.</p>
+                </div>
+                <button 
+                    onClick={toggleAutostart} 
+                    className={`px-3 py-1 rounded-full font-bold transition no-drag text-sm ${autostartEnabled ? 'bg-emerald-600 text-white' : 'bg-gray-600 text-gray-300'} border border-gray-500`}
+                >
+                    {autostartEnabled ? 'Aktiviert' : 'Deaktiviert'}
+                </button>
+              </div>
+
+               {/* Startpfad Konfiguration */}
               <div className={`p-4 rounded-lg border ${theme.cardBorder} ${theme.cardBg}`}>
                 <label className={`block text-sm font-bold mb-2 ${theme.textPrimary}`}>Applikation beim Start öffnen</label>
                 <div className="flex gap-2 items-center">
@@ -586,7 +618,6 @@ const App = () => {
                     onChange={(e) => setSettings({...settings, dailyAllowance: parseInt(e.target.value) || 0})}
                     className={`bg-gray-700 border ${theme.cardBorder} rounded p-2 ${theme.textPrimary} w-full focus:border-emerald-500 outline-none`}
                   />
-                  {/* NEUER RESET BUTTON */}
                   <button 
                       onClick={resetBalanceToDailyAllowance} 
                       title="Guthaben jetzt zurücksetzen"
@@ -663,7 +694,7 @@ const App = () => {
       </main>
 
       <footer className={`p-3 text-center text-[10px] ${theme.textSecondary} border-t ${theme.cardBorder} ${theme.headerBg} no-drag flex justify-between px-6`}>
-        <span>Focus Timer v2.2 (Start-Fix)</span>
+        <span>Focus Timer v2.3 (Autostart)</span>
         <span className={isElectronConnected ? 'text-emerald-500' : 'text-red-500 font-bold'}>
              System: {isElectronConnected ? 'Verbunden' : 'FEHLER'}
         </span>

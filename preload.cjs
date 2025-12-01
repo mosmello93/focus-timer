@@ -1,24 +1,20 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electron', {
+    // IPC Calls (Main -> Renderer)
+    onStartGaming: (callback) => ipcRenderer.on('start-gaming-mode', (event, processName) => callback(processName)),
+    onEndGaming: (callback) => ipcRenderer.on('end-gaming-mode', callback),
+    
+    // IPC Invokes (Renderer -> Main)
     startSteam: () => ipcRenderer.invoke('start-steam'),
     killSteam: () => ipcRenderer.invoke('kill-steam'),
     
-    // NEU: Signal, wenn der Timer manuell beendet wird, um die Backend-Überwachung zu stoppen
+    // Settings & State Sync
     endGamingManual: () => ipcRenderer.send('end-gaming-manual'),
-    
-    // Signal vom Backend, um Gaming zu starten
-    onStartGaming: (callback) => {
-        ipcRenderer.removeAllListeners('start-gaming-mode');
-        ipcRenderer.on('start-gaming-mode', (event, processName) => callback(processName));
-    },
-    
-    // NEU: Signal vom Backend, um Gaming automatisch zu beenden (wenn Prozess geschlossen)
-    onEndGaming: (callback) => {
-        ipcRenderer.removeAllListeners('end-gaming-mode');
-        ipcRenderer.on('end-gaming-mode', (event) => callback());
-    },
-    
-    // Funktion, um die Blacklist-Einstellungen vom Frontend an das Backend zu senden
     sendSettings: (settings) => ipcRenderer.send('update-settings', settings),
+    
+    // --- NEU: Autostart Funktionen ---
+    toggleAutostart: (enable) => ipcRenderer.invoke('toggle-autostart', enable),
+    getAutostartStatus: () => ipcRenderer.invoke('get-autostart-status'),
+    // --- ENDE Autostart Funktionen ---
 });
