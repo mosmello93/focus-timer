@@ -12,13 +12,12 @@ declare global {
       killSteam: () => void;
       
       onStartGaming: (callback: (processName: string) => void) => void; 
-      onEndGaming: (callback: () => void) => void; // NEU
-      endGamingManual: () => void; // NEU
+      onEndGaming: (callback: () => void) => void; 
+      endGamingManual: () => void; 
       sendSettings: (settings: AppSettings) => void;
     };
   }
 }
-// ... (Typen und Themes bleiben gleich)
 
 type Mode = 'idle' | 'working' | 'gaming';
 type ThemeMode = 'dark' | 'light';
@@ -100,6 +99,9 @@ const App = () => {
   const [passwordInput, setPasswordInput] = useState('');
   const [showPasswordPrompt, setShowPasswordPrompt] = useState(false);
   const [processAlert, setProcessAlert] = useState<string | null>(null); 
+  
+  // DIAGNOSE STATE
+  const [isElectronConnected, setIsElectronConnected] = useState(false);
 
   const loaded = useRef(false);
 
@@ -108,6 +110,14 @@ const App = () => {
 
   // --- PERSISTENZ & INITIALISIERUNG ---
   useEffect(() => {
+    // 1. Verbindung prüfen
+    if (window.electron) {
+        setIsElectronConnected(true);
+    } else {
+        console.error("KRITISCHER FEHLER: window.electron ist nicht definiert. Preload nicht geladen.");
+    }
+
+    // 2. Daten laden
     const savedBalance = localStorage.getItem('st_balance');
     const savedHistory = localStorage.getItem('st_history');
     const savedSettings = localStorage.getItem('st_settings');
@@ -119,12 +129,10 @@ const App = () => {
     let currentSettings: AppSettings = DEFAULT_SETTINGS;
     if (savedSettings) {
       currentSettings = { ...DEFAULT_SETTINGS, ...JSON.parse(savedSettings) };
-      
       currentSettings.themeMode = currentSettings.themeMode || 'dark'; 
       if (!currentSettings.blacklistProcesses || currentSettings.blacklistProcesses.length === 0) {
         currentSettings.blacklistProcesses = [currentSettings.processName || 'steam.exe'];
       }
-      
       setSettings(currentSettings);
       if (currentSettings.categories.length > 0) {
         setSelectedCategory(currentSettings.categories[0]);
@@ -169,13 +177,11 @@ const App = () => {
     }
   }, [mode]); 
 
-  // NEU: Registrieren des Listeners für automatisches Spielende (wenn Prozess geschlossen)
+  // Registrieren des Listeners für automatisches Spielende
   useEffect(() => {
     if (window.electron?.onEndGaming) {
         window.electron.onEndGaming(() => {
             if (mode === 'gaming') {
-                // Führt die normale Stop-Logik aus, aber ohne triggerSteamKill,
-                // da der Prozess ja bereits geschlossen wurde.
                 stopSession(false); 
                 setProcessAlert(`Prozess geschlossen. Spielmodus beendet.`);
                 setTimeout(() => setProcessAlert(null), 3000);
@@ -212,15 +218,10 @@ const App = () => {
     return () => clearInterval(interval);
   }, [mode, settings.ratio]);
 
-  // Funktion zum Stoppen der Session. Optionales Argument: ob Prozesse gekillt werden sollen.
   const stopSession = (killProcesses: boolean = true) => {
-    
-    // NEU: Informiert Electron über das manuelle Stoppen, damit die automatische Überwachung 
-    // nicht sofort wieder startet.
     if (mode === 'gaming' && window.electron?.endGamingManual) {
         window.electron.endGamingManual();
     }
-    
     if (mode === 'gaming' && killProcesses) triggerSteamKill();
 
     if (sessionTime > 0) {
@@ -298,16 +299,13 @@ const App = () => {
   // --- RENDER ---
 
   if (isGameOver) {
-    // Wenn das Guthaben 0 ist und der Modus gaming ist, beenden wir ihn über stopSession(true)
-    // Wenn er durch Kill-Befehl von 0 auf 0 geht, muss React nichts mehr tun.
-    // Wir behalten den GAMEOVER Screen bei, aber stellen sicher, dass alle Prozesse tot sind.
     return (
       <div className={`fixed inset-0 bg-red-900/95 z-50 flex flex-col items-center justify-center ${theme.textPrimary} animate-pulse drag-region`}>
         <AlertCircle size={80} className="mb-6" />
         <h1 className="text-6xl font-black mb-4 tracking-tighter uppercase">Time's Up</h1>
         <p className="text-xl opacity-80 mb-8">Der Prozess wurde beendet. Zeit, wieder produktiv zu sein.</p>
         <button 
-          onClick={() => stopSession(false)} // Setzt nur den Modus auf Idle zurück, kein Kill nötig
+          onClick={() => stopSession(false)} 
           className="bg-white text-red-900 px-8 py-3 rounded-md font-bold hover:bg-gray-200 transition no-drag"
         >
           Reset (Verstanden)
@@ -459,8 +457,7 @@ const App = () => {
             <h2 className={`text-xl font-bold mb-6 flex items-center gap-2 ${theme.textPrimary}`}><Settings className={`${theme.primaryColor}`}/> Einstellungen</h2>
             
             <div className="space-y-6">
-              
-               {/* Theme Toggle */}
+              {/* Theme Toggle */}
               <div className={`p-4 rounded-lg border ${theme.cardBorder} ${theme.cardBg}`}>
                 <label className={`block text-sm font-bold mb-2 ${theme.textPrimary}`}>Design-Modus</label>
                 <div className="flex gap-4 items-center">
@@ -501,7 +498,7 @@ const App = () => {
                 <p className={`text-xs mt-2 ${theme.textSecondary}`}>Wird jeden Tag beim ersten Start automatisch gutgeschrieben.</p>
               </div>
               
-              {/* Target Blacklist Processes (NEU) */}
+              {/* Target Blacklist Processes */}
               <div className={`p-4 rounded-lg border ${theme.cardBorder} ${theme.cardBg}`}>
                 <label className={`block text-sm font-bold mb-4 ${theme.textPrimary}`}>Zu überwachende Prozesse (Blacklist)</label>
                 <div className="flex gap-2 mb-4">
@@ -569,8 +566,11 @@ const App = () => {
       </main>
 
       {/* FOOTER */}
-      <footer className={`p-3 text-center text-[10px] ${theme.textSecondary} border-t ${theme.cardBorder} ${theme.headerBg} no-drag`}>
-        Focus Timer v2.2 • Überwacht {settings.blacklistProcesses.length} Prozesse • {balance > 0 ? 'Work Hard, Play Smart' : 'Work Hard'}
+      <footer className={`p-3 text-center text-[10px] ${theme.textSecondary} border-t ${theme.cardBorder} ${theme.headerBg} no-drag flex justify-between px-6`}>
+        <span>Focus Timer v2.2</span>
+        <span className={isElectronConnected ? 'text-emerald-500' : 'text-red-500 font-bold'}>
+             System: {isElectronConnected ? 'Verbunden' : 'FEHLER: preload.cjs nicht geladen'}
+        </span>
       </footer>
     </div>
   );

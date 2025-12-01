@@ -24,7 +24,7 @@
     "files": [
       "dist/**/*",
       "main.mjs",
-      "preload.js",
+      "preload.cjs",
       "package.json"
     ]
   },

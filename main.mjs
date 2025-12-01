@@ -1,26 +1,47 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { exec } from 'child_process';
+import { execFile } from 'child_process'; 
 import os from 'os';
+import fs from 'fs'; 
 
 // --- Pfad-Fix für ES Modules ---
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 // -------------------------------
 
-// State Management im Backend
-let currentBlacklist = ['steam.exe']; // Default-Blacklist
+// --- DEBUG LOGGER (Schreibt auf den Desktop) ---
+function logError(msg) {
+    try {
+        const logPath = path.join(app.getPath('desktop'), 'focus-timer-debug.txt');
+        fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`);
+    } catch (e) { }
+}
+
+// State Management
+let currentBlacklist = ['steam.exe']; 
 let mainWindow = null;
-let gamingActive = false; // NEU: Backend-Status der Überwachung
+let gamingActive = false;
 let isDev = !app.isPackaged;
+
+// --- PFAD-ERKENNUNG ---
+function getSystemBinaryPath(binaryName) {
+    const winDir = process.env.SystemRoot || 'C:\\Windows';
+    const isWow64 = process.arch === 'ia32' && process.env.hasOwnProperty('PROCESSOR_ARCHITEW6432');
+    const sysDir = isWow64 ? 'Sysnative' : 'System32';
+    return path.join(winDir, sysDir, binaryName);
+}
+
+const TASKKILL_PATH = getSystemBinaryPath('taskkill.exe');
+const TASKLIST_PATH = getSystemBinaryPath('tasklist.exe');
+
+logError(`App gestartet (Fix v2). Arch=${process.arch}`);
 
 function createWindow() {
   const win = new BrowserWindow({
     width: 1000,
     height: 800,
     autoHideMenuBar: true,
-    // icon: path.join(__dirname, 'icon.ico'), 
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false, 
@@ -29,7 +50,7 @@ function createWindow() {
     backgroundColor: '#1f2937'
   });
   
-  mainWindow = win; // Speichern der Referenz
+  mainWindow = win;
   
   if (isDev) {
     win.loadURL('http://localhost:5173');
@@ -38,19 +59,15 @@ function createWindow() {
   }
 }
 
-// --- BLACKLIST LOGIK: Prozessüberwachung ---
-const processCheckInterval = 2000; // Alle 2 Sekunden prüfen
+// --- BLACKLIST LOGIK ---
+const processCheckInterval = 2000; 
 
 function checkProcesses() {
-    if (os.platform() !== 'win32') {
-        console.warn("Process monitoring is only supported on Windows.");
-        return;
-    }
+    if (os.platform() !== 'win32') return;
 
-    // tasklist /nh (No Header) /fo csv (CSV Format)
-    exec('tasklist /nh /fo csv', (error, stdout) => {
+    execFile(TASKLIST_PATH, ['/nh', '/fo', 'csv'], (error, stdout) => {
         if (error) {
-            console.error(`exec error: ${error}`);
+            logError(`Tasklist Fehler: ${error.message}`);
             return;
         }
 
@@ -59,88 +76,83 @@ function checkProcesses() {
             .filter((name) => !!name);
 
         let blacklistedProcessFound = false;
+        let foundProcessName = '';
 
         for (const targetProcess of currentBlacklist) {
             if (runningProcesses.includes(targetProcess)) {
                 blacklistedProcessFound = true;
-                break; // Mindestens ein Prozess läuft, beende Schleife
+                foundProcessName = targetProcess;
+                break; 
             }
         }
         
         // --- LOGIK STARTEN ---
         if (blacklistedProcessFound) {
+            // FIX: Wir senden das Signal JETZT IMMER, wenn der Prozess läuft.
+            // Das Frontend ignoriert es automatisch, wenn der Timer schon läuft.
+            // So stellen wir sicher, dass es auch bei App-Start erkannt wird.
+            if (mainWindow) {
+                mainWindow.webContents.send('start-gaming-mode', foundProcessName);
+            }
+
             if (!gamingActive) {
-                // Wenn ein Prozess gefunden wird und wir NICHT aktiv sind -> Starte Gaming
                 gamingActive = true;
-                if (mainWindow) {
-                    mainWindow.webContents.send('start-gaming-mode', runningProcesses.find(p => currentBlacklist.includes(p)) || 'Unknown Process');
-                }
+                logError(`Prozess gefunden: ${foundProcessName}. Sende Start-Signal.`);
             }
         } 
         
         // --- LOGIK STOPPEN ---
         else if (gamingActive) {
-            // Wenn KEIN Prozess gefunden wird, aber wir aktiv sind -> Stoppe Gaming
             gamingActive = false;
+            logError("Kein Prozess mehr gefunden. Sende Stop-Signal.");
             if (mainWindow) {
-                mainWindow.webContents.send('end-gaming-mode'); // NEUES SIGNAL!
+                mainWindow.webContents.send('end-gaming-mode');
             }
         }
     });
 }
 
-// Intervall zum regelmäßigen Prozess-Check
 let intervalId; 
 
 app.whenReady().then(() => {
   createWindow();
   
-  // Intervall nur starten, wenn das Fenster bereit ist
+  logError(`Initiale Blacklist: ${currentBlacklist.join(', ')}`);
+  
   if (!intervalId) {
     intervalId = setInterval(checkProcesses, processCheckInterval);
   }
 
-  // IPC-HANDLER: Vom Frontend (React) aufgerufen
+  // Handler für manuellen Start
   ipcMain.handle('start-steam', () => {
-    // Wenn der Nutzer manuell startet, setzen wir den Backend-Status auf aktiv
-    gamingActive = true; 
-    shell.openExternal('steam://'); 
+    const firstProcess = currentBlacklist[0];
+    if (firstProcess === 'steam.exe') {
+        gamingActive = true; 
+        shell.openExternal('steam://'); 
+        return true; 
+    } else {
+        gamingActive = true;
+        return false; 
+    }
   });
 
-  // IPC-HANDLER: Vom Frontend (React) aufgerufen, um alle Blacklist-Programme zu schließen
+  // Handler für manuellen Kill
   ipcMain.handle('kill-steam', () => {
-    // Wenn wir manuell killen, setzen wir den Backend-Status auf inaktiv
     gamingActive = false; 
+    logError("Manueller Kill ausgelöst.");
     for (const processName of currentBlacklist) {
-        // /IM: Image Name, /F: Force kill
-        exec(`taskkill /IM ${processName} /F`, (error) => {
-            if (error) {
-                if (!error.message.includes('not found')) {
-                    console.warn(`Kill Fehler bei ${processName}:`, error.message);
-                }
-            } else {
-                console.log(`${processName} erfolgreich beendet.`);
-            }
-        });
+        execFile(TASKKILL_PATH, ['/IM', processName, '/F'], (error) => {});
     }
   });
   
-  // NEU IPC-RECEIVER: React sagt uns, wenn der Modus manuell BEENDET wurde
-  ipcMain.on('end-gaming-manual', () => {
-      // Wenn React den Modus manuell beendet (z.B. Guthaben 0 oder Stop-Button), 
-      // stellen wir sicher, dass die automatische Überwachung nicht sofort wieder startet.
-      gamingActive = false; 
-      console.log("Backend-Status: Manuell beendet.");
-  });
+  ipcMain.on('end-gaming-manual', () => { gamingActive = false; });
   
-  // IPC-RECEIVER: Empfängt die Blacklist-Einstellungen vom React-Frontend
   ipcMain.on('update-settings', (event, settings) => {
       if (settings && settings.blacklistProcesses) {
           currentBlacklist = settings.blacklistProcesses.map(p => p.toLowerCase());
-          console.log("Electron Blacklist aktualisiert:", currentBlacklist);
+          logError(`Blacklist Update empfangen: ${currentBlacklist.join(', ')}`);
       }
   });
-
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -149,7 +161,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
-    clearInterval(intervalId); // Aufräumen des Intervalls
+    clearInterval(intervalId); 
     app.quit();
   }
 });
