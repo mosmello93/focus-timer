@@ -1,0 +1,22 @@
+Node Modules
+
+/node_modules
+
+Build-Ordner
+
+/dist
+/release
+/build
+/out
+
+Electron-Builder Caches
+
+*.asar
+*-unpacked/
+
+Logs und Caches
+
+npm-debug.log*
+yarn-debug.log*
+.DS_Store
+.vscode

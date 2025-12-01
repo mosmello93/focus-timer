@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom Styles für Electron */
+@layer base {
+  html {
+    /* Eine moderne Schriftart für die gesamte App */
+    font-family: Inter, system-ui, sans-serif;
+  }
+
+  /* Diese Klasse macht Bereiche "greifbar", um das Fenster zu verschieben */
+  .drag-region {
+      -webkit-app-region: drag;
+  }
+
+  /* Wichtig: Buttons brauchen diese Klasse, sonst kann man sie nicht klicken */
+  .no-drag {
+      -webkit-app-region: no-drag;
+  }
+}
