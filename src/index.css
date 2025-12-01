@@ -1,21 +1,24 @@
+/* Basis- und Utility-Stile von Tailwind importieren */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* Custom Styles für Electron */
-@layer base {
-  html {
-    /* Eine moderne Schriftart für die gesamte App */
-    font-family: Inter, system-ui, sans-serif;
-  }
+/* Eigene globale Stile (optional) */
+body {
+    -webkit-app-region: no-drag; /* Stellt sicher, dass der gesamte Body klickbar ist */
+}
 
-  /* Diese Klasse macht Bereiche "greifbar", um das Fenster zu verschieben */
-  .drag-region {
-      -webkit-app-region: drag;
-  }
+/* Wichtig: Erlaubt das Ziehen der App durch den Header */
+.drag-region {
+    -webkit-app-region: drag;
+}
 
-  /* Wichtig: Buttons brauchen diese Klasse, sonst kann man sie nicht klicken */
-  .no-drag {
-      -webkit-app-region: no-drag;
-  }
+/* Verhindert das Ziehen bei Bedienelementen */
+.no-drag {
+    -webkit-app-region: no-drag;
+}
+
+/* Anpassung der Range-Input-Farbe in Light Mode */
+.accent-blue-500 {
+    accent-color: #3b82f6;
 }

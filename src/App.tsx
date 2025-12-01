@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo, useRef } from 'react'; 
 import { 
   Clock, Gamepad2, AlertCircle, Settings, 
-  Plus, Trash2, Lock, Briefcase, BarChart3, Moon, Sun, Volume2, VolumeX, FolderOpen, RotateCcw, Zap
+  Plus, Trash2, Lock, Briefcase, BarChart3, Moon, Sun, Volume2, VolumeX, FolderOpen, RotateCcw, Zap, StopCircle
 } from 'lucide-react';
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'; 
 
 // --- TYPEDEFS ---
 declare global {
@@ -16,7 +17,7 @@ declare global {
       endGamingManual: () => void; 
       sendSettings: (settings: AppSettings) => void;
       
-      // NEU: Autostart Funktionen
+      // Autostart Funktionen
       toggleAutostart: (enable: boolean) => Promise<boolean>;
       getAutostartStatus: () => Promise<boolean>;
     };
@@ -90,6 +91,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   startPath: 'steam://',
 };
 
+
 // --- AUDIO ENGINE (Synthesizer) ---
 const playSound = (type: 'warning' | 'critical' | 'start' | 'end') => {
     if (typeof window === 'undefined' || !window.AudioContext) return;
@@ -156,7 +158,7 @@ const App = () => {
   const [showPasswordPrompt, setShowPasswordPrompt] = useState(false);
   const [processAlert, setProcessAlert] = useState<string | null>(null); 
   const [isElectronConnected, setIsElectronConnected] = useState(false);
-  const [autostartEnabled, setAutostartEnabled] = useState(false); // NEU: Autostart Status
+  const [autostartEnabled, setAutostartEnabled] = useState(false); 
 
   const loaded = useRef(false);
   const isGameOver = balance <= 0 && mode === 'gaming';
@@ -339,7 +341,9 @@ const App = () => {
       setPasswordInput('');
       setView('settings');
     } else {
-      alert("Falsches Passwort!");
+      console.error("Falsches Passwort!");
+      setProcessAlert("Falsches Passwort!");
+      setTimeout(() => setProcessAlert(null), 3000);
     }
   };
   
@@ -362,11 +366,71 @@ const App = () => {
     return `${h > 0 ? h + ':' : ''}${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
+  const categoryStats = useMemo(() => {
+    const workSessions = history.filter(s => s.type === 'work' && s.category);
+    
+    const groupedTime: { [key: string]: number } = workSessions.reduce((acc, curr) => {
+      const cat = curr.category || 'Unbekannt';
+      acc[cat] = (acc[cat] || 0) + curr.duration;
+      return acc;
+    }, {} as { [key: string]: number });
+
+    const data = Object.keys(groupedTime).map((name) => ({
+      name,
+      value: groupedTime[name],
+    }));
+    
+    const COLORS = ['#059669', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6']; 
+
+    return {
+        data,
+        COLORS,
+        totalWork: data.reduce((sum, item) => sum + item.value, 0)
+    };
+  }, [history]);
+  
   const stats = useMemo(() => {
-    const totalWork = history.filter(s => s.type === 'work').reduce((acc, curr) => acc + curr.duration, 0);
+    const totalWork = categoryStats.totalWork; 
     const totalGame = history.filter(s => s.type === 'game').reduce((acc, curr) => acc + curr.duration, 0);
     return { totalWork, totalGame };
-  }, [history]);
+  }, [history, categoryStats]);
+
+  const handleQuickStartWork = () => {
+      if (mode !== 'idle') stopSession(true); 
+      setMode('working');
+      if (settings.soundEnabled) playSound('start');
+  };
+
+  const handleQuickStartGaming = () => {
+      if (mode !== 'idle') stopSession(true);
+      if (balance > 0) {
+          triggerSteamStart(); 
+          setMode('gaming'); 
+          if (settings.soundEnabled) playSound('start');
+      } else {
+          setProcessAlert("Nicht genug Guthaben zum Starten des Spielmodus.");
+          setTimeout(() => setProcessAlert(null), 3000);
+      }
+  };
+
+  // TS2739 Fix: Optional chaining und Default-Werte für Tooltip
+  const CustomTooltip = ({ active, payload }: any) => {
+    if (active && payload && payload.length && payload[0].payload) {
+      const data = payload[0].payload;
+      const durationSeconds = data.value;
+      
+      const percentage = categoryStats.totalWork > 0 ? (durationSeconds / categoryStats.totalWork) * 100 : 0;
+      
+      return (
+        <div className="bg-gray-800/90 border border-gray-600 p-3 rounded-lg text-white shadow-xl text-sm backdrop-blur-sm">
+          <p className="font-bold mb-1">{data.name}</p>
+          <p className="text-emerald-400">{formatTime(durationSeconds)}</p>
+          <p className="text-gray-400">({percentage.toFixed(1)}%)</p>
+        </div>
+      );
+    }
+    return null;
+  };
 
   if (isGameOver) {
     return (
@@ -439,7 +503,7 @@ const App = () => {
             <div className={`relative overflow-hidden rounded-2xl border-2 transition-colors duration-500 shadow-2xl p-10 text-center ${theme.cardBg} ${theme.cardBorder}`}>
               
               <div className="mb-4">
-                  {mode === 'working' && <span className={`uppercase tracking-widest text-xs font-bold border px-3 py-1 rounded-full ${theme.workLabel}`}>Arbeitsmodus</span>}
+                  {mode === 'working' && <span className={`uppercase tracking-widest text-xs font-bold border px-3 py-1 rounded-full ${theme.workLabel}`}>Arbeitsmodus: {selectedCategory}</span>}
                   {mode === 'gaming' && <span className={`uppercase tracking-widest text-xs font-bold border px-3 py-1 rounded-full ${theme.gamingLabel}`}>Freizeit aktiv</span>}
                   {mode === 'idle' && <span className="text-gray-500 uppercase tracking-widest text-xs font-bold">Bereit</span>}
               </div>
@@ -454,59 +518,124 @@ const App = () => {
                  <span>{mode === 'working' ? `Verdienst: +${formatTime(sessionTime * settings.ratio)}` : 'Viel Spaß!'}</span>
               </div>
             </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className={`p-5 rounded-xl border transition-all flex flex-col gap-4 ${theme.cardBg} ${theme.cardBorder}`}>
-                <div className="flex items-center gap-2 font-bold"><Briefcase size={18} className="text-emerald-500"/> Arbeit</div>
-                <select 
-                  disabled={mode !== 'idle'} value={selectedCategory} onChange={(e) => setSelectedCategory(e.target.value)}
-                  className={`bg-gray-700 ${theme.textPrimary} text-sm p-2 rounded border ${theme.cardBorder} outline-none`}
-                >
-                  {settings.categories.map(c => <option key={c} value={c}>{c}</option>)}
-                </select>
-                {mode === 'working' ? (
-                  <button onClick={() => stopSession(true)} className="w-full py-3 bg-red-600 text-white rounded-lg font-bold border border-red-800 hover:bg-red-500 no-drag">Beenden</button>
-                ) : (
-                  <button onClick={() => setMode('working')} disabled={mode !== 'idle'} className={`w-full py-3 ${theme.workAccent} text-white rounded-lg font-bold disabled:opacity-50 transition no-drag`}>Starten</button>
+            
+            <div className={`p-4 rounded-xl border-2 border-dashed border-gray-600/50 justify-center flex flex-col md:flex-row gap-4 ${mode === 'idle' ? 'items-center' : ''}`}>
+                
+                {mode === 'idle' && (
+                    <>
+                        <div className='flex flex-col gap-2 flex-1 w-full md:w-auto'>
+                           <label className={`text-xs font-semibold ${theme.textSecondary}`}>Arbeitskategorie wählen:</label>
+                           <select 
+                            value={selectedCategory} onChange={(e) => setSelectedCategory(e.target.value)}
+                            className={`bg-gray-700 ${theme.textPrimary} text-sm p-3 rounded-lg border ${theme.cardBorder} outline-none focus:border-emerald-500 transition-colors`}
+                           >
+                              {settings.categories.map(c => <option key={c} value={c}>{c}</option>)}
+                           </select>
+                           <button 
+                                onClick={handleQuickStartWork}
+                                disabled={!selectedCategory}
+                                className={`w-full py-3 rounded-lg font-bold text-white transition-colors ${theme.workAccent} disabled:opacity-50 no-drag flex items-center justify-center gap-2`}
+                            >
+                                <Briefcase size={18}/> Arbeit starten ({selectedCategory})
+                            </button>
+                        </div>
+                        
+                        <div className='flex flex-col gap-2 flex-1 w-full md:w-auto'>
+                            <label className={`text-xs font-semibold ${theme.textSecondary}`}>Start-App:</label>
+                            <span className={`text-sm p-3 rounded-lg border ${theme.cardBorder} ${theme.textSecondary} truncate`}>
+                                {settings.startPath.includes('://') ? settings.startPath : (settings.startPath.split('\\').pop() || 'Nicht konfiguriert')}
+                            </span>
+                            <button 
+                                onClick={handleQuickStartGaming}
+                                disabled={balance <= 0 || !settings.startPath}
+                                className={`w-full py-3 rounded-lg font-bold text-white transition-colors ${theme.gamingAccent} disabled:opacity-50 no-drag flex items-center justify-center gap-2`}
+                            >
+                                <Gamepad2 size={18}/> Gaming starten
+                            </button>
+                        </div>
+                    </>
                 )}
-              </div>
 
-              <div className={`p-5 rounded-xl border transition-all flex flex-col gap-4 justify-between ${theme.cardBg} ${theme.cardBorder}`}>
-                <div className="flex items-center gap-2 font-bold"><Gamepad2 size={18} className="text-red-500"/> Freizeit / Gaming</div>
-                <div className={`text-xs ${theme.textSecondary} h-full flex items-center`}>
-                    {settings.startPath.includes('://') ? (
-                        `Start-Link: ${settings.startPath}`
-                    ) : (
-                        `Start-App: ${settings.startPath.split('\\').pop() || 'Nicht konfiguriert'}`
-                    )}
-                </div>
-                {mode === 'gaming' ? (
-                  <button onClick={() => stopSession(true)} className="w-full py-3 bg-red-600 text-white rounded-lg font-bold border border-red-800 hover:bg-red-500 no-drag">Stop & Kill</button>
-                ) : (
-                  <button onClick={() => { 
-                      if (settings.soundEnabled) playSound('start');
-                      triggerSteamStart(); 
-                      setMode('gaming'); 
-                  }} disabled={mode !== 'idle' || balance <= 0} className={`w-full py-3 ${theme.gamingAccent} text-white rounded-lg font-bold disabled:opacity-50 transition no-drag`}>Spiel Starten</button>
+                {(mode === 'working' || mode === 'gaming') && (
+                    <div className='w-full'>
+                       <button 
+                            onClick={() => stopSession(true)}
+                            className="w-full py-4 rounded-lg font-bold bg-gray-500 text-white hover:bg-gray-400 transition-colors no-drag flex items-center justify-center gap-2 text-lg"
+                        >
+                            <StopCircle size={20}/> {mode === 'working' ? 'Arbeit beenden' : 'Session stoppen & killen'}
+                        </button>
+                    </div>
                 )}
-              </div>
             </div>
           </div>
         )}
 
         {view === 'stats' && (
-          <div className="w-full max-w-3xl space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-300">
-             <div className="grid grid-cols-2 gap-4 mb-4">
-                <div className={`p-4 rounded-xl border ${theme.cardBorder} ${theme.cardBg} text-center`}>
-                  <div className={`text-xs uppercase mb-1 ${theme.textSecondary}`}>Total Arbeit</div>
-                  <div className={`text-2xl font-mono text-emerald-500`}>{formatTime(stats.totalWork)}</div>
+          <div className="w-full max-w-3xl space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-300">
+             <h2 className={`text-2xl font-bold flex items-center gap-2 ${theme.textPrimary}`}><BarChart3 className={`${theme.primaryColor}`}/> Arbeitsstatistik</h2>
+
+             <div className="grid grid-cols-2 gap-4">
+                <div className={`p-6 rounded-xl border ${theme.cardBorder} ${theme.cardBg} text-center shadow-lg`}>
+                  <div className={`text-xs uppercase mb-2 ${theme.textSecondary}`}>Total geleistete Arbeit</div>
+                  <div className={`text-3xl font-mono text-emerald-500 font-bold`}>{formatTime(stats.totalWork)}</div>
                 </div>
-                <div className={`p-4 rounded-xl border ${theme.cardBorder} ${theme.cardBg} text-center`}>
-                  <div className={`text-xs uppercase mb-1 ${theme.textSecondary}`}>Total Spiel</div>
-                  <div className={`text-2xl font-mono text-red-500`}>{formatTime(stats.totalGame)}</div>
+                <div className={`p-6 rounded-xl border ${theme.cardBorder} ${theme.cardBg} text-center shadow-lg`}>
+                  <div className={`text-xs uppercase mb-2 ${theme.textSecondary}`}>Total verbrauchte Spielzeit</div>
+                  <div className={`text-3xl font-mono text-red-500 font-bold`}>{formatTime(stats.totalGame)}</div>
                 </div>
              </div>
-             <div className={`rounded-xl border ${theme.cardBorder} ${theme.cardBg} overflow-hidden`}>
+
+             <div className={`p-6 rounded-xl border ${theme.cardBorder} ${theme.cardBg} shadow-lg`}>
+                <h3 className="text-lg font-semibold mb-4 border-b pb-2">Arbeitszeit nach Kategorie</h3>
+                
+                {categoryStats.totalWork > 0 ? (
+                    <div className="flex flex-col md:flex-row items-center justify-center h-80 w-full">
+                        <div className="w-full md:w-1/2 h-full flex items-center justify-center">
+                            <ResponsiveContainer width="100%" height="100%">
+                                <PieChart>
+                                    <Pie
+                                        data={categoryStats.data}
+                                        dataKey="value"
+                                        nameKey="name"
+                                        cx="50%"
+                                        cy="50%"
+                                        outerRadius={80}
+                                        fill="#8884d8"
+                                        label={({ name, percent }: any) => `${name} (${(percent ? percent * 100 : 0).toFixed(0)}%)`}
+                                        labelLine={false}
+                                    >
+                                        {categoryStats.data.map((_, index) => (
+                                            <Cell key={`cell-${index}`} fill={categoryStats.COLORS[index % categoryStats.COLORS.length]} />
+                                        ))}
+                                    </Pie>
+                                    <Tooltip content={<CustomTooltip />} />
+                                </PieChart>
+                            </ResponsiveContainer>
+                        </div>
+                        
+                        <div className="w-full md:w-1/2 p-4">
+                            <ul className="space-y-2">
+                                {categoryStats.data.map((entry, index) => (
+                                    <li key={`legend-${index}`} className="flex items-center text-sm">
+                                        <span className="w-3 h-3 rounded-full mr-2" style={{ backgroundColor: categoryStats.COLORS[index % categoryStats.COLORS.length] }}></span>
+                                        <span className="font-semibold">{entry.name}:</span>
+                                        <span className={`ml-auto font-mono ${theme.textPrimary}`}>{formatTime(entry.value)}</span>
+                                        <span className={`ml-2 text-xs ${theme.textSecondary}`}>({((entry.value / categoryStats.totalWork) * 100).toFixed(1)}%)</span>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    </div>
+                ) : (
+                    <div className={`text-center py-10 ${theme.textSecondary}`}>
+                        <AlertCircle size={32} className="mx-auto mb-3 text-red-500" />
+                        <p>Noch keine Arbeitsdaten erfasst, um ein Diagramm zu erstellen.</p>
+                    </div>
+                )}
+             </div>
+
+             <div className={`rounded-xl border ${theme.cardBorder} ${theme.cardBg} overflow-hidden shadow-lg`}>
+                <h3 className="text-lg font-semibold p-4 border-b">Gesamthistorie</h3>
                 <table className="w-full text-sm text-left">
                   <thead className={`bg-gray-700/50 text-xs ${theme.textSecondary} uppercase`}>
                     <tr><th className="px-4 py-3">Typ</th><th className="px-4 py-3">Kat</th><th className="px-4 py-3">Dauer</th><th className="px-4 py-3 text-right">Datum</th></tr>
@@ -527,12 +656,11 @@ const App = () => {
         )}
 
         {view === 'settings' && (
-          <div className={`w-full max-w-2xl ${theme.cardBg} rounded-xl border ${theme.cardBorder} p-6 animate-in fade-in zoom-in duration-300`}>
+          <div className="w-full max-w-2xl ${theme.cardBg} rounded-xl border ${theme.cardBorder} p-6 animate-in fade-in zoom-in duration-300">
             <h2 className={`text-xl font-bold mb-6 flex items-center gap-2 ${theme.textPrimary}`}><Settings className={`${theme.primaryColor}`}/> Einstellungen</h2>
             
             <div className="space-y-6">
               
-               {/* NEU: Autostart Toggle */}
               <div className={`p-4 rounded-lg border ${theme.cardBorder} ${theme.cardBg} flex justify-between items-center`}>
                 <div>
                     <label className={`block text-sm font-bold ${theme.textPrimary} mb-1 flex items-center gap-2`}><Zap size={16}/> System-Autostart</label>
@@ -546,7 +674,6 @@ const App = () => {
                 </button>
               </div>
 
-               {/* Startpfad Konfiguration */}
               <div className={`p-4 rounded-lg border ${theme.cardBorder} ${theme.cardBg}`}>
                 <label className={`block text-sm font-bold mb-2 ${theme.textPrimary}`}>Applikation beim Start öffnen</label>
                 <div className="flex gap-2 items-center">
@@ -562,7 +689,6 @@ const App = () => {
                 <p className={`text-xs mt-1 ${theme.textSecondary}`}>Geben Sie entweder einen Protokoll-Link (z.B. <code>steam://</code>) oder den <strong>vollständigen Pfad zur .exe-Datei</strong> ein. Dies wird beim Drücken von "Spiel Starten" ausgeführt.</p>
               </div>
               
-               {/* Theme Toggle */}
               <div className={`p-4 rounded-lg border ${theme.cardBorder} ${theme.cardBg}`}>
                 <label className={`block text-sm font-bold mb-2 ${theme.textPrimary}`}>Design-Modus</label>
                 <div className="flex gap-4 items-center">
@@ -575,7 +701,6 @@ const App = () => {
                 </div>
               </div>
 
-               {/* Sound Toggle */}
               <div className={`p-4 rounded-lg border ${theme.cardBorder} ${theme.cardBg}`}>
                 <label className={`block text-sm font-bold mb-2 ${theme.textPrimary}`}>Soundeffekte</label>
                 <div className="flex gap-4 items-center">
@@ -593,7 +718,6 @@ const App = () => {
                 <p className={`text-xs mt-2 ${theme.textSecondary}`}>Spielt Warntöne bei 5 Minuten und 1 Minute Restzeit.</p>
               </div>
 
-              {/* Ratio Control */}
               <div className={`p-4 rounded-lg border ${theme.cardBorder} ${theme.cardBg}`}>
                 <label className={`block text-sm font-bold mb-2 ${theme.textPrimary}`}>Umrechnungskurs (Ratio)</label>
                 <div className="flex gap-4 items-center">
@@ -608,7 +732,6 @@ const App = () => {
                 <p className={`text-xs mt-2 ${theme.textSecondary}`}>1 Stunde Arbeit = {Math.round(settings.ratio * 60)} Minuten Spielzeit</p>
               </div>
 
-              {/* Daily Allowance */}
               <div className={`p-4 rounded-lg border ${theme.cardBorder} ${theme.cardBg}`}>
                 <label className={`block text-sm font-bold mb-2 ${theme.textPrimary}`}>Tägliches Grundguthaben (Minuten)</label>
                 <div className='flex gap-2'>
@@ -628,7 +751,6 @@ const App = () => {
                 </div>
               </div>
               
-              {/* Target Blacklist Processes */}
               <div className={`p-4 rounded-lg border ${theme.cardBorder} ${theme.cardBg}`}>
                 <label className={`block text-sm font-bold mb-4 ${theme.textPrimary}`}>Zu überwachende Prozesse (Blacklist)</label>
                 <div className="flex gap-2 mb-4">
@@ -650,7 +772,6 @@ const App = () => {
                 </div>
               </div>
               
-              {/* Categories */}
               <div className={`p-4 rounded-lg border ${theme.cardBorder} ${theme.cardBg}`}>
                 <label className={`block text-sm font-bold mb-4 ${theme.textPrimary}`}>Arbeits-Kategorien</label>
                 <div className="flex gap-2 mb-4">
@@ -672,7 +793,6 @@ const App = () => {
                 </div>
               </div>
 
-              {/* Password */}
               <div className={`p-4 rounded-lg border ${theme.cardBorder} ${theme.cardBg}`}>
                 <label className={`block text-sm font-bold mb-2 ${theme.textPrimary}`}>Passwortschutz (Eltern)</label>
                 <div className="flex gap-2 items-center">
