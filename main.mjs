@@ -11,31 +11,43 @@ const __dirname = path.dirname(__filename);
 // -------------------------------
 
 // --- DEBUG LOGGER (Schreibt auf den Desktop) ---
+// Falls etwas schiefgeht, wird hier eine Datei erstellt.
 function logError(msg) {
     try {
+        // Sicherstellen, dass die App-Pfad-Funktion verfügbar ist, bevor sie verwendet wird
         const logPath = path.join(app.getPath('desktop'), 'focus-timer-debug.txt');
         fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`);
-    } catch (e) { }
+    } catch (e) { 
+        // Ignorieren, falls wir nicht schreiben können
+    }
 }
 
 // State Management
 let currentBlacklist = ['steam.exe']; 
+let currentStartPath = 'steam://'; // NEU: Standardpfad für den manuellen Start
 let mainWindow = null;
 let gamingActive = false;
 let isDev = !app.isPackaged;
 
-// --- PFAD-ERKENNUNG ---
+// --- PFAD-ERKENNUNG (Der robuste Fix für Production) ---
 function getSystemBinaryPath(binaryName) {
     const winDir = process.env.SystemRoot || 'C:\\Windows';
+    
+    // Prüfen, ob wir eine 32-Bit App auf 64-Bit Windows sind (WoW64)
+    // In diesem Fall müssen wir 'Sysnative' nutzen, um auf das echte System32 zuzugreifen
     const isWow64 = process.arch === 'ia32' && process.env.hasOwnProperty('PROCESSOR_ARCHITEW6432');
+    
     const sysDir = isWow64 ? 'Sysnative' : 'System32';
-    return path.join(winDir, sysDir, binaryName);
+    const fullPath = path.join(winDir, sysDir, binaryName);
+    
+    return fullPath;
 }
 
 const TASKKILL_PATH = getSystemBinaryPath('taskkill.exe');
 const TASKLIST_PATH = getSystemBinaryPath('tasklist.exe');
 
-logError(`App gestartet (Fix v2). Arch=${process.arch}`);
+logError(`App gestartet. Arch=${process.arch}. Kill Pfad: ${TASKKILL_PATH}`);
+
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -43,7 +55,7 @@ function createWindow() {
     height: 800,
     autoHideMenuBar: true,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
+      preload: path.join(__dirname, 'preload.cjs'), // Sicherstellen, dass .cjs geladen wird
       nodeIntegration: false, 
       contextIsolation: true 
     },
@@ -59,12 +71,13 @@ function createWindow() {
   }
 }
 
-// --- BLACKLIST LOGIK ---
+// --- BLACKLIST LOGIK: Prozessüberwachung ---
 const processCheckInterval = 2000; 
 
 function checkProcesses() {
     if (os.platform() !== 'win32') return;
 
+    // Verwende execFile für maximale Robustheit
     execFile(TASKLIST_PATH, ['/nh', '/fo', 'csv'], (error, stdout) => {
         if (error) {
             logError(`Tasklist Fehler: ${error.message}`);
@@ -86,18 +99,16 @@ function checkProcesses() {
             }
         }
         
-        // --- LOGIK STARTEN ---
+        // --- LOGIK STARTEN (Signal senden, solange der Prozess läuft) ---
         if (blacklistedProcessFound) {
-            // FIX: Wir senden das Signal JETZT IMMER, wenn der Prozess läuft.
-            // Das Frontend ignoriert es automatisch, wenn der Timer schon läuft.
-            // So stellen wir sicher, dass es auch bei App-Start erkannt wird.
+            // Sende Signal IMMER, um Race Conditions beim App-Start zu beheben
             if (mainWindow) {
                 mainWindow.webContents.send('start-gaming-mode', foundProcessName);
             }
 
             if (!gamingActive) {
                 gamingActive = true;
-                logError(`Prozess gefunden: ${foundProcessName}. Sende Start-Signal.`);
+                logError(`Prozess gefunden: ${foundProcessName}. Starte Überwachung.`);
             }
         } 
         
@@ -123,36 +134,55 @@ app.whenReady().then(() => {
     intervalId = setInterval(checkProcesses, processCheckInterval);
   }
 
-  // Handler für manuellen Start
+  // IPC-HANDLER: Manuelles Starten des konfigurierten Programms
   ipcMain.handle('start-steam', () => {
-    const firstProcess = currentBlacklist[0];
-    if (firstProcess === 'steam.exe') {
-        gamingActive = true; 
-        shell.openExternal('steam://'); 
-        return true; 
-    } else {
-        gamingActive = true;
-        return false; 
-    }
+    // currentStartPath wird vom Frontend gesetzt (z.B. steam:// oder C:\Pfad\App.exe)
+    
+    // Protokoll-Links (z.B. steam://) oder Pfade zur EXE
+    shell.openExternal(currentStartPath)
+        .then(() => logError(`Startbefehl gesendet für: ${currentStartPath}`))
+        .catch(err => logError(`Fehler beim Starten von ${currentStartPath}: ${err.message}`));
+    
+    // Wir setzen gamingActive immer auf true, da das Frontend den Modus gewechselt hat.
+    gamingActive = true; 
   });
 
-  // Handler für manuellen Kill
+  // IPC-HANDLER: Manuelles Killen (Stop & Kill Button)
   ipcMain.handle('kill-steam', () => {
     gamingActive = false; 
-    logError("Manueller Kill ausgelöst.");
+    logError("Manuelles Killen ausgelöst.");
+    
     for (const processName of currentBlacklist) {
-        execFile(TASKKILL_PATH, ['/IM', processName, '/F'], (error) => {});
+        // Verwende den expliziten taskkill-Pfad
+        execFile(TASKKILL_PATH, ['/IM', processName, '/F'], (error) => {
+            if (error && !error.message.includes('not found')) {
+                logError(`Kill Fehler bei ${processName}: ${error.message}`);
+            } else {
+                logError(`${processName} erfolgreich beendet/nicht gefunden.`);
+            }
+        });
     }
   });
   
-  ipcMain.on('end-gaming-manual', () => { gamingActive = false; });
+  // IPC-RECEIVER: React sagt uns, wenn der Modus manuell BEENDET wurde
+  ipcMain.on('end-gaming-manual', () => { 
+      gamingActive = false;
+      logError("Backend-Status: Manuell beendet (vom Frontend).");
+  });
   
+  // IPC-RECEIVER: Empfängt ALLE Einstellungen vom React-Frontend (inkl. Blacklist & Startpfad)
   ipcMain.on('update-settings', (event, settings) => {
-      if (settings && settings.blacklistProcesses) {
-          currentBlacklist = settings.blacklistProcesses.map(p => p.toLowerCase());
-          logError(`Blacklist Update empfangen: ${currentBlacklist.join(', ')}`);
+      if (settings) {
+          if (settings.blacklistProcesses) {
+            currentBlacklist = settings.blacklistProcesses.map(p => p.toLowerCase());
+          }
+          if (settings.startPath) {
+              currentStartPath = settings.startPath;
+          }
+          logError(`Einstellungen aktualisiert. Blacklist: ${currentBlacklist.join(', ')}, Startpfad: ${currentStartPath}`);
       }
   });
+
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

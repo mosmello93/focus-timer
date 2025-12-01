@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'; 
 import { 
   Clock, Gamepad2, AlertCircle, Settings, 
-  Plus, Trash2, Lock, Briefcase, BarChart3, Moon, Sun, Volume2, VolumeX
+  Plus, Trash2, Lock, Briefcase, BarChart3, Moon, Sun, Volume2, VolumeX, FolderOpen
 } from 'lucide-react';
 
 // --- TYPEDEFS ---
@@ -39,7 +39,8 @@ interface AppSettings {
   password?: string;
   themeMode: ThemeMode;
   blacklistProcesses: string[];
-  soundEnabled: boolean; // NEU: Sound-Einstellung
+  soundEnabled: boolean; 
+  startPath: string; // NEU: Pfad zum manuell zu startenden Programm
 }
 
 const Themes = {
@@ -81,12 +82,12 @@ const DEFAULT_SETTINGS: AppSettings = {
   categories: DEFAULT_CATEGORIES,
   themeMode: 'dark', 
   blacklistProcesses: ['steam.exe'], 
-  soundEnabled: true, // NEU: Standardmäßig an
+  soundEnabled: true, 
+  startPath: 'steam://', // NEU: Standardpfad
 };
 
 // --- AUDIO ENGINE (Synthesizer) ---
 const playSound = (type: 'warning' | 'critical' | 'start' | 'end') => {
-    // Verhindert Fehler, wenn AudioContext nicht verfügbar ist (z.B. sehr alte Browser)
     if (typeof window === 'undefined' || !window.AudioContext) return;
 
     const ctx = new window.AudioContext();
@@ -99,16 +100,14 @@ const playSound = (type: 'warning' | 'critical' | 'start' | 'end') => {
     const now = ctx.currentTime;
 
     if (type === 'warning') {
-        // Sanfter "Ping" (5 Minuten Warnung)
         osc.type = 'sine';
-        osc.frequency.setValueAtTime(440, now); // A4
+        osc.frequency.setValueAtTime(440, now);
         osc.frequency.exponentialRampToValueAtTime(880, now + 0.1);
         gain.gain.setValueAtTime(0.1, now);
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
         osc.start(now);
         osc.stop(now + 0.5);
     } else if (type === 'critical') {
-        // Dringender "Doppel-Beep" (1 Minute Warnung)
         osc.type = 'square';
         osc.frequency.setValueAtTime(800, now);
         gain.gain.setValueAtTime(0.1, now);
@@ -118,7 +117,6 @@ const playSound = (type: 'warning' | 'critical' | 'start' | 'end') => {
         osc.start(now);
         osc.stop(now + 0.4);
     } else if (type === 'start') {
-        // Aufsteigender Ton (Start)
         osc.type = 'triangle';
         osc.frequency.setValueAtTime(220, now);
         osc.frequency.linearRampToValueAtTime(440, now + 0.2);
@@ -127,7 +125,6 @@ const playSound = (type: 'warning' | 'critical' | 'start' | 'end') => {
         osc.start(now);
         osc.stop(now + 0.3);
     } else if (type === 'end') {
-        // Absteigender Ton (Ende)
         osc.type = 'sawtooth';
         osc.frequency.setValueAtTime(440, now);
         osc.frequency.linearRampToValueAtTime(110, now + 0.3);
@@ -179,8 +176,8 @@ const App = () => {
       if (!currentSettings.blacklistProcesses || currentSettings.blacklistProcesses.length === 0) {
         currentSettings.blacklistProcesses = [currentSettings.processName || 'steam.exe'];
       }
-      // Migration für Sound
       if (currentSettings.soundEnabled === undefined) currentSettings.soundEnabled = true;
+      if (!currentSettings.startPath) currentSettings.startPath = 'steam://'; // NEU: Pfad-Migration
 
       setSettings(currentSettings);
       if (currentSettings.categories.length > 0) setSelectedCategory(currentSettings.categories[0]);
@@ -200,9 +197,11 @@ const App = () => {
     if (!loaded.current) return;
     localStorage.setItem('st_balance', balance.toString());
     localStorage.setItem('st_history', JSON.stringify(history));
-    localStorage.setItem('st_settings', JSON.stringify(settings));
+    // Fügen Sie den neuen Wert startPath beim Speichern hinzu
+    localStorage.setItem('st_settings', JSON.stringify(settings)); 
   }, [balance, history, settings]);
   
+  // Senden der Settings an Electron für die Blacklist-Überwachung (inkl. startPath)
   useEffect(() => {
       if (window.electron?.sendSettings) window.electron.sendSettings(settings);
   }, [settings]);
@@ -211,7 +210,7 @@ const App = () => {
     if (window.electron?.onStartGaming) {
         window.electron.onStartGaming((processName) => {
             if (mode === 'idle' || mode === 'working') {
-                if (settings.soundEnabled) playSound('start'); // Sound bei Auto-Start
+                if (settings.soundEnabled) playSound('start');
                 setMode('gaming');
                 setProcessAlert(`Automatischer Spielstart: ${processName} erkannt.`);
                 setTimeout(() => setProcessAlert(null), 3000);
@@ -224,7 +223,7 @@ const App = () => {
     if (window.electron?.onEndGaming) {
         window.electron.onEndGaming(() => {
             if (mode === 'gaming') {
-                if (settings.soundEnabled) playSound('end'); // Sound bei Auto-Stop
+                if (settings.soundEnabled) playSound('end');
                 stopSession(false); 
                 setProcessAlert(`Prozess geschlossen. Spielmodus beendet.`);
                 setTimeout(() => setProcessAlert(null), 3000);
@@ -248,10 +247,9 @@ const App = () => {
       interval = setInterval(() => {
         setSessionTime(prev => prev + 1);
         setBalance(prev => {
-          // NEU: Sound-Trigger bei bestimmten Zeiten
           if (settings.soundEnabled) {
-              if (prev === 300) playSound('warning'); // 5 Minuten Warnung
-              if (prev === 60) playSound('critical'); // 1 Minute Alarm
+              if (prev === 300) playSound('warning');
+              if (prev === 60) playSound('critical');
           }
 
           if (prev <= 1) {
@@ -264,7 +262,7 @@ const App = () => {
     }
 
     return () => clearInterval(interval);
-  }, [mode, settings.ratio, settings.soundEnabled]); // soundEnabled als Dependency wichtig!
+  }, [mode, settings.ratio, settings.soundEnabled]); 
 
   const stopSession = (killProcesses: boolean = true) => {
     if (mode === 'gaming' && window.electron?.endGamingManual) {
@@ -448,7 +446,13 @@ const App = () => {
 
               <div className={`p-5 rounded-xl border transition-all flex flex-col gap-4 justify-between ${theme.cardBg} ${theme.cardBorder}`}>
                 <div className="flex items-center gap-2 font-bold"><Gamepad2 size={18} className="text-red-500"/> Freizeit / Gaming</div>
-                <div className={`text-xs ${theme.textSecondary} h-full flex items-center`}>Überwacht Prozesse: {settings.blacklistProcesses.join(', ')}</div>
+                <div className={`text-xs ${theme.textSecondary} h-full flex items-center`}>
+                    {settings.startPath.includes('://') ? (
+                        `Start-Link: ${settings.startPath}`
+                    ) : (
+                        `Start-App: ${settings.startPath.split('\\').pop() || 'Nicht konfiguriert'}`
+                    )}
+                </div>
                 {mode === 'gaming' ? (
                   <button onClick={() => stopSession(true)} className="w-full py-3 bg-red-600 text-white rounded-lg font-bold border border-red-800 hover:bg-red-500 no-drag">Stop & Kill</button>
                 ) : (
@@ -501,6 +505,22 @@ const App = () => {
             
             <div className="space-y-6">
               
+               {/* NEU: Startpfad Konfiguration */}
+              <div className={`p-4 rounded-lg border ${theme.cardBorder} ${theme.cardBg}`}>
+                <label className={`block text-sm font-bold mb-2 ${theme.textPrimary}`}>Applikation beim Start öffnen</label>
+                <div className="flex gap-2 items-center">
+                   <FolderOpen size={16} className={`${theme.textSecondary}`}/>
+                   <input 
+                    type="text" 
+                    value={settings.startPath || ''}
+                    onChange={(e) => setSettings({...settings, startPath: e.target.value})}
+                    placeholder="Steam:// oder C:\Pfad\zur\App.exe"
+                    className={`flex-1 bg-transparent border-none ${theme.textPrimary} focus:ring-0 placeholder-gray-500`}
+                  />
+                </div>
+                <p className={`text-xs mt-1 ${theme.textSecondary}`}>Geben Sie entweder einen Protokoll-Link (z.B. <code>steam://</code>) oder den <strong>vollständigen Pfad zur .exe-Datei</strong> ein. Dies wird beim Drücken von "Spiel Starten" ausgeführt.</p>
+              </div>
+              
                {/* Theme Toggle */}
               <div className={`p-4 rounded-lg border ${theme.cardBorder} ${theme.cardBg}`}>
                 <label className={`block text-sm font-bold mb-2 ${theme.textPrimary}`}>Design-Modus</label>
@@ -514,7 +534,7 @@ const App = () => {
                 </div>
               </div>
 
-               {/* NEU: Sound Toggle */}
+               {/* Sound Toggle */}
               <div className={`p-4 rounded-lg border ${theme.cardBorder} ${theme.cardBg}`}>
                 <label className={`block text-sm font-bold mb-2 ${theme.textPrimary}`}>Soundeffekte</label>
                 <div className="flex gap-4 items-center">
@@ -522,7 +542,7 @@ const App = () => {
                         onClick={() => {
                             const newState = !settings.soundEnabled;
                             setSettings({...settings, soundEnabled: newState});
-                            if(newState) playSound('start'); // Test-Ton
+                            if(newState) playSound('start');
                         }}
                         className={`px-4 py-2 rounded-lg font-bold transition flex items-center gap-2 ${settings.soundEnabled ? 'bg-emerald-600 text-white' : 'bg-gray-600 text-gray-300'} border border-gray-500 no-drag`}
                     >
@@ -624,7 +644,7 @@ const App = () => {
       </main>
 
       <footer className={`p-3 text-center text-[10px] ${theme.textSecondary} border-t ${theme.cardBorder} ${theme.headerBg} no-drag flex justify-between px-6`}>
-        <span>Focus Timer v2.2 (Audio)</span>
+        <span>Focus Timer v2.2 (Start-Fix)</span>
         <span className={isElectronConnected ? 'text-emerald-500' : 'text-red-500 font-bold'}>
              System: {isElectronConnected ? 'Verbunden' : 'FEHLER'}
         </span>
