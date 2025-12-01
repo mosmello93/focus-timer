@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'; 
 import { 
   Clock, Gamepad2, AlertCircle, Settings, 
-  Plus, Trash2, Lock, Briefcase, BarChart3, Moon, Sun, Volume2, VolumeX, FolderOpen
+  Plus, Trash2, Lock, Briefcase, BarChart3, Moon, Sun, Volume2, VolumeX, FolderOpen, RotateCcw
 } from 'lucide-react';
 
 // --- TYPEDEFS ---
@@ -235,6 +235,15 @@ const App = () => {
   const triggerSteamStart = () => window.electron?.startSteam() || console.log(">> Start App");
   const triggerSteamKill = () => window.electron?.killSteam() || console.log(">> Kill App");
 
+  // --- NEUE FUNKTION: Guthaben auf Tageslimit zurücksetzen ---
+  const resetBalanceToDailyAllowance = () => {
+    // Wandelt die Minuten des täglichen Limits in Sekunden um
+    const dailyAllowanceSeconds = settings.dailyAllowance * 60;
+    setBalance(dailyAllowanceSeconds);
+    setProcessAlert(`Guthaben auf ${formatTime(dailyAllowanceSeconds)} (Tageslimit) zurückgesetzt.`);
+    setTimeout(() => setProcessAlert(null), 3000);
+  };
+  
   useEffect(() => {
     let interval: any = null;
 
@@ -570,12 +579,22 @@ const App = () => {
               {/* Daily Allowance */}
               <div className={`p-4 rounded-lg border ${theme.cardBorder} ${theme.cardBg}`}>
                 <label className={`block text-sm font-bold mb-2 ${theme.textPrimary}`}>Tägliches Grundguthaben (Minuten)</label>
-                <input 
-                  type="number" 
-                  value={settings.dailyAllowance}
-                  onChange={(e) => setSettings({...settings, dailyAllowance: parseInt(e.target.value) || 0})}
-                  className={`bg-gray-700 border ${theme.cardBorder} rounded p-2 ${theme.textPrimary} w-full focus:border-emerald-500 outline-none`}
-                />
+                <div className='flex gap-2'>
+                  <input 
+                    type="number" 
+                    value={settings.dailyAllowance}
+                    onChange={(e) => setSettings({...settings, dailyAllowance: parseInt(e.target.value) || 0})}
+                    className={`bg-gray-700 border ${theme.cardBorder} rounded p-2 ${theme.textPrimary} w-full focus:border-emerald-500 outline-none`}
+                  />
+                  {/* NEUER RESET BUTTON */}
+                  <button 
+                      onClick={resetBalanceToDailyAllowance} 
+                      title="Guthaben jetzt zurücksetzen"
+                      className='bg-blue-500 hover:bg-blue-600 text-white p-2 rounded no-drag flex items-center justify-center transition-colors'
+                  >
+                      <RotateCcw size={20} />
+                  </button>
+                </div>
               </div>
               
               {/* Target Blacklist Processes */}
