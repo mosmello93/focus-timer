@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'; 
 import { 
   Clock, Gamepad2, AlertCircle, Settings, 
-  Plus, Trash2, Lock, Briefcase, BarChart3, Moon, Sun
+  Plus, Trash2, Lock, Briefcase, BarChart3, Moon, Sun, Volume2, VolumeX
 } from 'lucide-react';
 
 // --- TYPEDEFS ---
@@ -38,7 +38,8 @@ interface AppSettings {
   categories: string[];
   password?: string;
   themeMode: ThemeMode;
-  blacklistProcesses: string[]; 
+  blacklistProcesses: string[];
+  soundEnabled: boolean; // NEU: Sound-Einstellung
 }
 
 const Themes = {
@@ -80,6 +81,61 @@ const DEFAULT_SETTINGS: AppSettings = {
   categories: DEFAULT_CATEGORIES,
   themeMode: 'dark', 
   blacklistProcesses: ['steam.exe'], 
+  soundEnabled: true, // NEU: Standardmäßig an
+};
+
+// --- AUDIO ENGINE (Synthesizer) ---
+const playSound = (type: 'warning' | 'critical' | 'start' | 'end') => {
+    // Verhindert Fehler, wenn AudioContext nicht verfügbar ist (z.B. sehr alte Browser)
+    if (typeof window === 'undefined' || !window.AudioContext) return;
+
+    const ctx = new window.AudioContext();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    const now = ctx.currentTime;
+
+    if (type === 'warning') {
+        // Sanfter "Ping" (5 Minuten Warnung)
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(440, now); // A4
+        osc.frequency.exponentialRampToValueAtTime(880, now + 0.1);
+        gain.gain.setValueAtTime(0.1, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
+        osc.start(now);
+        osc.stop(now + 0.5);
+    } else if (type === 'critical') {
+        // Dringender "Doppel-Beep" (1 Minute Warnung)
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(800, now);
+        gain.gain.setValueAtTime(0.1, now);
+        gain.gain.setValueAtTime(0, now + 0.1);
+        gain.gain.setValueAtTime(0.1, now + 0.2);
+        gain.gain.setValueAtTime(0, now + 0.3);
+        osc.start(now);
+        osc.stop(now + 0.4);
+    } else if (type === 'start') {
+        // Aufsteigender Ton (Start)
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(220, now);
+        osc.frequency.linearRampToValueAtTime(440, now + 0.2);
+        gain.gain.setValueAtTime(0.1, now);
+        gain.gain.linearRampToValueAtTime(0, now + 0.3);
+        osc.start(now);
+        osc.stop(now + 0.3);
+    } else if (type === 'end') {
+        // Absteigender Ton (Ende)
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(440, now);
+        osc.frequency.linearRampToValueAtTime(110, now + 0.3);
+        gain.gain.setValueAtTime(0.1, now);
+        gain.gain.linearRampToValueAtTime(0, now + 0.4);
+        osc.start(now);
+        osc.stop(now + 0.4);
+    }
 };
 
 const App = () => {
@@ -92,32 +148,22 @@ const App = () => {
   const [view, setView] = useState<'timer' | 'stats' | 'settings'>('timer');
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   
-  // Settings UI State
   const [newCategory, setNewCategory] = useState('');
   const [newBlacklistProcess, setNewBlacklistProcess] = useState(''); 
   const [settingsUnlocked, setSettingsUnlocked] = useState(false);
   const [passwordInput, setPasswordInput] = useState('');
   const [showPasswordPrompt, setShowPasswordPrompt] = useState(false);
   const [processAlert, setProcessAlert] = useState<string | null>(null); 
-  
-  // DIAGNOSE STATE
   const [isElectronConnected, setIsElectronConnected] = useState(false);
 
   const loaded = useRef(false);
-
   const isGameOver = balance <= 0 && mode === 'gaming';
   const theme = Themes[settings.themeMode];
 
   // --- PERSISTENZ & INITIALISIERUNG ---
   useEffect(() => {
-    // 1. Verbindung prüfen
-    if (window.electron) {
-        setIsElectronConnected(true);
-    } else {
-        console.error("KRITISCHER FEHLER: window.electron ist nicht definiert. Preload nicht geladen.");
-    }
+    if (window.electron) setIsElectronConnected(true);
 
-    // 2. Daten laden
     const savedBalance = localStorage.getItem('st_balance');
     const savedHistory = localStorage.getItem('st_history');
     const savedSettings = localStorage.getItem('st_settings');
@@ -133,10 +179,11 @@ const App = () => {
       if (!currentSettings.blacklistProcesses || currentSettings.blacklistProcesses.length === 0) {
         currentSettings.blacklistProcesses = [currentSettings.processName || 'steam.exe'];
       }
+      // Migration für Sound
+      if (currentSettings.soundEnabled === undefined) currentSettings.soundEnabled = true;
+
       setSettings(currentSettings);
-      if (currentSettings.categories.length > 0) {
-        setSelectedCategory(currentSettings.categories[0]);
-      }
+      if (currentSettings.categories.length > 0) setSelectedCategory(currentSettings.categories[0]);
     }
 
     const today = new Date().toDateString();
@@ -149,7 +196,6 @@ const App = () => {
     loaded.current = true;
   }, []);
 
-  // Automatisches Speichern der States
   useEffect(() => {
     if (!loaded.current) return;
     localStorage.setItem('st_balance', balance.toString());
@@ -157,40 +203,36 @@ const App = () => {
     localStorage.setItem('st_settings', JSON.stringify(settings));
   }, [balance, history, settings]);
   
-  // Senden der Settings an Electron für die Blacklist-Überwachung
   useEffect(() => {
-      if (window.electron?.sendSettings) {
-          window.electron.sendSettings(settings);
-      }
+      if (window.electron?.sendSettings) window.electron.sendSettings(settings);
   }, [settings]);
 
-  // Registrieren des Listeners für automatischen Spielstart
   useEffect(() => {
     if (window.electron?.onStartGaming) {
         window.electron.onStartGaming((processName) => {
             if (mode === 'idle' || mode === 'working') {
+                if (settings.soundEnabled) playSound('start'); // Sound bei Auto-Start
                 setMode('gaming');
                 setProcessAlert(`Automatischer Spielstart: ${processName} erkannt.`);
                 setTimeout(() => setProcessAlert(null), 3000);
             }
         });
     }
-  }, [mode]); 
+  }, [mode, settings.soundEnabled]); 
 
-  // Registrieren des Listeners für automatisches Spielende
   useEffect(() => {
     if (window.electron?.onEndGaming) {
         window.electron.onEndGaming(() => {
             if (mode === 'gaming') {
+                if (settings.soundEnabled) playSound('end'); // Sound bei Auto-Stop
                 stopSession(false); 
                 setProcessAlert(`Prozess geschlossen. Spielmodus beendet.`);
                 setTimeout(() => setProcessAlert(null), 3000);
             }
         });
     }
-  }, [mode]);
+  }, [mode, settings.soundEnabled]);
 
-  // --- LOGIK ---
   const triggerSteamStart = () => window.electron?.startSteam() || console.log(">> Start App");
   const triggerSteamKill = () => window.electron?.killSteam() || console.log(">> Kill App");
 
@@ -206,6 +248,12 @@ const App = () => {
       interval = setInterval(() => {
         setSessionTime(prev => prev + 1);
         setBalance(prev => {
+          // NEU: Sound-Trigger bei bestimmten Zeiten
+          if (settings.soundEnabled) {
+              if (prev === 300) playSound('warning'); // 5 Minuten Warnung
+              if (prev === 60) playSound('critical'); // 1 Minute Alarm
+          }
+
           if (prev <= 1) {
             triggerSteamKill();
             return 0;
@@ -216,7 +264,7 @@ const App = () => {
     }
 
     return () => clearInterval(interval);
-  }, [mode, settings.ratio]);
+  }, [mode, settings.ratio, settings.soundEnabled]); // soundEnabled als Dependency wichtig!
 
   const stopSession = (killProcesses: boolean = true) => {
     if (mode === 'gaming' && window.electron?.endGamingManual) {
@@ -239,7 +287,6 @@ const App = () => {
     setSessionTime(0);
   };
 
-  // --- SETTINGS LOGIC ---
   const handleAddCategory = () => {
     if (newCategory && !settings.categories.includes(newCategory)) {
       setSettings(prev => ({ ...prev, categories: [...prev.categories, newCategory] }));
@@ -296,8 +343,6 @@ const App = () => {
     return { totalWork, totalGame };
   }, [history]);
 
-  // --- RENDER ---
-
   if (isGameOver) {
     return (
       <div className={`fixed inset-0 bg-red-900/95 z-50 flex flex-col items-center justify-center ${theme.textPrimary} animate-pulse drag-region`}>
@@ -338,7 +383,6 @@ const App = () => {
 
   return (
     <div className={`min-h-screen ${theme.baseBg} ${theme.textPrimary} font-sans flex flex-col`}>
-      {/* HEADER */}
       <header className={`${theme.headerBg} border-b ${theme.cardBorder} p-4 flex justify-between items-center shadow-xl sticky top-0 z-10 drag-region`}>
         <div className="flex items-center gap-3">
           <div className={`w-10 h-10 ${theme.cardBg} rounded-full flex items-center justify-center border border-gray-600`}>
@@ -357,17 +401,14 @@ const App = () => {
         </div>
       </header>
       
-      {/* Prozess-Alert */}
       {processAlert && (
           <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-red-600 text-white px-4 py-2 rounded-lg shadow-lg z-30 animate-in fade-in slide-in-from-top-4 duration-300">
               {processAlert}
           </div>
       )}
 
-      {/* MAIN CONTENT */}
       <main className="flex-1 p-6 flex flex-col items-center justify-center w-full max-w-4xl mx-auto overflow-y-auto">
         
-        {/* --- TIMER VIEW --- */}
         {view === 'timer' && (
           <div className="w-full max-w-2xl flex flex-col gap-6 animate-in fade-in zoom-in duration-300">
             <div className={`relative overflow-hidden rounded-2xl border-2 transition-colors duration-500 shadow-2xl p-10 text-center ${theme.cardBg} ${theme.cardBorder}`}>
@@ -411,14 +452,17 @@ const App = () => {
                 {mode === 'gaming' ? (
                   <button onClick={() => stopSession(true)} className="w-full py-3 bg-red-600 text-white rounded-lg font-bold border border-red-800 hover:bg-red-500 no-drag">Stop & Kill</button>
                 ) : (
-                  <button onClick={() => { triggerSteamStart(); setMode('gaming'); }} disabled={mode !== 'idle' || balance <= 0} className={`w-full py-3 ${theme.gamingAccent} text-white rounded-lg font-bold disabled:opacity-50 transition no-drag`}>Spiel Starten</button>
+                  <button onClick={() => { 
+                      if (settings.soundEnabled) playSound('start');
+                      triggerSteamStart(); 
+                      setMode('gaming'); 
+                  }} disabled={mode !== 'idle' || balance <= 0} className={`w-full py-3 ${theme.gamingAccent} text-white rounded-lg font-bold disabled:opacity-50 transition no-drag`}>Spiel Starten</button>
                 )}
               </div>
             </div>
           </div>
         )}
 
-        {/* --- STATS VIEW --- */}
         {view === 'stats' && (
           <div className="w-full max-w-3xl space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-300">
              <div className="grid grid-cols-2 gap-4 mb-4">
@@ -451,13 +495,13 @@ const App = () => {
           </div>
         )}
 
-        {/* --- SETTINGS VIEW --- */}
         {view === 'settings' && (
           <div className={`w-full max-w-2xl ${theme.cardBg} rounded-xl border ${theme.cardBorder} p-6 animate-in fade-in zoom-in duration-300`}>
             <h2 className={`text-xl font-bold mb-6 flex items-center gap-2 ${theme.textPrimary}`}><Settings className={`${theme.primaryColor}`}/> Einstellungen</h2>
             
             <div className="space-y-6">
-              {/* Theme Toggle */}
+              
+               {/* Theme Toggle */}
               <div className={`p-4 rounded-lg border ${theme.cardBorder} ${theme.cardBg}`}>
                 <label className={`block text-sm font-bold mb-2 ${theme.textPrimary}`}>Design-Modus</label>
                 <div className="flex gap-4 items-center">
@@ -468,7 +512,24 @@ const App = () => {
                         {settings.themeMode === 'dark' ? <><Sun size={18}/> Light Mode aktivieren</> : <><Moon size={18}/> Dark Mode aktivieren</>}
                     </button>
                 </div>
-                <p className={`text-xs mt-2 ${theme.textSecondary}`}>Wechselt zwischen dunklem und hellem Design.</p>
+              </div>
+
+               {/* NEU: Sound Toggle */}
+              <div className={`p-4 rounded-lg border ${theme.cardBorder} ${theme.cardBg}`}>
+                <label className={`block text-sm font-bold mb-2 ${theme.textPrimary}`}>Soundeffekte</label>
+                <div className="flex gap-4 items-center">
+                    <button 
+                        onClick={() => {
+                            const newState = !settings.soundEnabled;
+                            setSettings({...settings, soundEnabled: newState});
+                            if(newState) playSound('start'); // Test-Ton
+                        }}
+                        className={`px-4 py-2 rounded-lg font-bold transition flex items-center gap-2 ${settings.soundEnabled ? 'bg-emerald-600 text-white' : 'bg-gray-600 text-gray-300'} border border-gray-500 no-drag`}
+                    >
+                        {settings.soundEnabled ? <><Volume2 size={18}/> Sound aktiviert</> : <><VolumeX size={18}/> Sound stummgeschaltet</>}
+                    </button>
+                </div>
+                <p className={`text-xs mt-2 ${theme.textSecondary}`}>Spielt Warntöne bei 5 Minuten und 1 Minute Restzeit.</p>
               </div>
 
               {/* Ratio Control */}
@@ -495,7 +556,6 @@ const App = () => {
                   onChange={(e) => setSettings({...settings, dailyAllowance: parseInt(e.target.value) || 0})}
                   className={`bg-gray-700 border ${theme.cardBorder} rounded p-2 ${theme.textPrimary} w-full focus:border-emerald-500 outline-none`}
                 />
-                <p className={`text-xs mt-2 ${theme.textSecondary}`}>Wird jeden Tag beim ersten Start automatisch gutgeschrieben.</p>
               </div>
               
               {/* Target Blacklist Processes */}
@@ -518,7 +578,6 @@ const App = () => {
                     </div>
                   ))}
                 </div>
-                <p className={`text-xs mt-2 ${theme.textSecondary}`}>Diese Prozesse werden beendet, wenn das Guthaben auf 0 fällt.</p>
               </div>
               
               {/* Categories */}
@@ -556,7 +615,6 @@ const App = () => {
                     className={`flex-1 bg-transparent border-none ${theme.textPrimary} focus:ring-0 placeholder-gray-500`}
                   />
                 </div>
-                <p className={`text-xs mt-1 ${theme.textSecondary}`}>Wenn gesetzt, wird dieses Passwort beim Öffnen der Einstellungen abgefragt.</p>
               </div>
 
             </div>
@@ -565,11 +623,10 @@ const App = () => {
 
       </main>
 
-      {/* FOOTER */}
       <footer className={`p-3 text-center text-[10px] ${theme.textSecondary} border-t ${theme.cardBorder} ${theme.headerBg} no-drag flex justify-between px-6`}>
-        <span>Focus Timer v2.2</span>
+        <span>Focus Timer v2.2 (Audio)</span>
         <span className={isElectronConnected ? 'text-emerald-500' : 'text-red-500 font-bold'}>
-             System: {isElectronConnected ? 'Verbunden' : 'FEHLER: preload.cjs nicht geladen'}
+             System: {isElectronConnected ? 'Verbunden' : 'FEHLER'}
         </span>
       </footer>
     </div>
